@@ -1,1 +1,18 @@
-<h1>OK</h1>
+<html>
+    <body>
+        <h1>Bigquery Data Extractor</h1>
+        <div>
+
+        <span>Austin Bike Data for view bike_data.</span>
+        <form action="/api/v1/getcsv/bike_data" method="GET">
+            <label for="status">Status:</label><br>
+            <input type="text" id="status" name="status"><br>
+            <label for="county">County:</label><br>
+            <input type="text" id="county" name="county"><br>
+            <label for="limit">Limit</label><br>
+            <input type="text" id="limit" name="limit">
+            <input type="submit" value="Go!">  
+        </form>
+    </div>
+    </body>
+</html>

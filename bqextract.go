@@ -3,7 +3,7 @@ package bqextract
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -15,47 +15,94 @@ import (
 	"github.com/goog-lukemc/tserver"
 )
 
+const (
+	SQLLIMIT   string = "select * from %s where status = @status and county = @county limit @limit"
+	SQLNOLIMIT string = "select * from %s where status = @status and county = @county"
+)
+
 func CSVHandler(server *tserver.ServerControl) {
 	server.MUX.HandleFunc("/api/v1/getcsv/", func(w http.ResponseWriter, r *http.Request) {
-		dlurl, err := getBQData(r.Context(), path.Base(r.URL.Path))
-		if err != nil {
-			tserver.Respond(w, err)
+		bqParams := []bigquery.QueryParameter{}
+		tv := path.Base(r.URL.Path)
+		log.Printf("%+v", r.URL.Query())
+		var sql string
+		for k, v := range r.URL.Query() {
+			if k == "limit" {
+				l, _ := strconv.Atoi(v[0])
+				if l == 0 {
+					sql = fmt.Sprintf(SQLNOLIMIT, tv)
+					continue
+				}
+				bqParams = append(bqParams, bigquery.QueryParameter{
+					Name:  k,
+					Value: l,
+				})
+				sql = fmt.Sprintf(SQLLIMIT, tv)
+				continue
+			}
+
+			bqParams = append(bqParams, bigquery.QueryParameter{
+				Name:  k,
+				Value: v[0],
+			})
+
 		}
-		//tserver.Respond(w, []byte(dlurl))
-		http.Redirect(w, r, dlurl, 307)
+		log.Printf("view:%s params:%+v", tv, bqParams)
+
+		// create a bq client
+		client, err := bigquery.NewClient(r.Context(), os.Getenv("BQPROJECT"))
+		if err != nil {
+			tserver.Respond(w, fmt.Errorf("errBQClient:%s", err))
+			return
+		}
+		defer client.Close()
+
+		// Run the query
+		tmpTble, err := runQuery(r.Context(), client, sql, bqParams...)
+		if err != nil {
+			tserver.Respond(w, fmt.Errorf("errBQQuery:%s", err))
+			return
+		}
+		log.Printf("Something:%s", tmpTble)
+		// Export the results
+		url, err := exportGCS(client, r.Context(), tv, tmpTble)
+		if err != nil {
+			tserver.Respond(w, fmt.Errorf("errExport:%s", err))
+			return
+		}
+		http.Redirect(w, r, url, 307)
 	})
 }
 
-func getBQData(ctx context.Context, tv string) (string, error) {
-	client, err := bigquery.NewClient(ctx, os.Getenv("BQPROJECT"))
-	if err != nil {
-		return "", err
-	}
+func runQuery(ctx context.Context, bqClient *bigquery.Client, sql string, param ...bigquery.QueryParameter) (string, error) {
 
 	tempTable := strconv.FormatInt(time.Now().UnixNano(), 10) + "_tmp"
 
-	q := client.Query("")
+	q := bqClient.Query("")
 	q.QueryConfig = bigquery.QueryConfig{
 		DefaultProjectID: os.Getenv("BQPROJECT"),
 		DefaultDatasetID: os.Getenv("BQDATASET"),
 		WriteDisposition: bigquery.WriteTruncate,
-		Q:                fmt.Sprintf("select * from %s limit 1000", tv),
+		Q:                sql,
 		Dst: &bigquery.Table{
 			ProjectID: os.Getenv("BQPROJECT"),
 			DatasetID: os.Getenv("BQDATASET"),
 			TableID:   tempTable,
 		},
+		Parameters: param,
 	}
 
 	j, err := q.Run(ctx)
 	if err != nil {
 		return "", err
 	}
-
 	_, err = j.Wait(ctx)
-	if err != nil {
-		return "", err
-	}
+
+	return tempTable, err
+
+}
+
+func exportGCS(bqClient *bigquery.Client, ctx context.Context, tv string, tempTable string) (string, error) {
 
 	bucket := os.Getenv("REPORTBUCKET")
 
@@ -67,7 +114,7 @@ func getBQData(ctx context.Context, tv string) (string, error) {
 
 	gcsRef := bigquery.NewGCSReference(gcPath)
 
-	extract := client.Dataset(os.Getenv("BQDATASET")).Table(tempTable).ExtractorTo(gcsRef)
+	extract := bqClient.Dataset(os.Getenv("BQDATASET")).Table(tempTable).ExtractorTo(gcsRef)
 
 	ej, err := extract.Run(ctx)
 	if err != nil {
@@ -78,18 +125,15 @@ func getBQData(ctx context.Context, tv string) (string, error) {
 		return "", err
 	}
 
-	bts, err := ioutil.ReadFile("key.pem")
-	if err != nil {
-		return "", err
-	}
 	url, err := storage.SignedURL(bucket, fileName, &storage.SignedURLOptions{
 		GoogleAccessID: "dlp-accessor@dlp-secure-dev.iam.gserviceaccount.com",
-		PrivateKey:     bts,
+		PrivateKey:     []byte(PEM),
 		Method:         "GET",
 		Expires:        time.Now().Add(time.Hour),
 	})
+
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("errSigning:%s", err)
 	}
 
 	return url, nil
