@@ -1,0 +1,30 @@
+# Copyright 2020 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+steps:
+    - name: 'golang'
+      args: ['go','build', '-o', /workspace/app]
+      dir: 'cmd/webserver'
+      env:
+      - GOPROXY=https://proxy.golang.org
+      - CGO_ENABLED=0
+      - GOOS=linux
+
+    - name: 'google/cloud-sdk'
+      args: ['gcloud','builds','submit','--tag','gcr.io/$PROJECT_ID/${_SOLUTION_NAME}']
+    
+    - name: 'google/cloud-sdk'
+      args: ['gcloud','run','deploy','${_SOLUTION_NAME}','--image','gcr.io/$PROJECT_ID/${_SOLUTION_NAME}','--platform','managed','--region','us-central1','--set-env-vars=BQPROJECT=${_BQPROJECT},BQDATASET=${_BQDATASET},REPORTBUCKET=${_REPORTBUCKET}']
+
+      #BQPROJECT=dlp-secure-dev BQDATASET="fakedata" REPORTBUCKET="hm-backup-bob"  go run .
